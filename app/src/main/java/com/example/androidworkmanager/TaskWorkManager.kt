@@ -2,886 +2,251 @@ package com.example.androidworkmanager
 
 import android.content.Context
 import android.util.Log
-import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LiveData
-import androidx.lifecycle.Observer
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
-import androidx.work.CoroutineWorker
 import androidx.work.Data
-import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.ListenableWorker
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequest
 import androidx.work.OutOfQuotaPolicy
-import androidx.work.PeriodicWorkRequest
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.guava.await
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
- * WorkManager 任务管理类 -  用于学习版本，重点体现相关使用（不推荐实际开发使用）
- *
- * 提供完整的 Android WorkManager 封装，包括：
- * - 一次性任务（OneTime）、周期性任务（Periodic）、任务链（Chaining）
- * - 约束条件、唯一性任务、加急任务
- * - 任务观察（LiveData & Flow）、任务控制（取消、查询）
- *
+ * worker任务 管理类，  学习版本
  */
 object TaskWorkManager {
 
     private const val TAG = "TaskWorkManager"
 
-    // 默认配置常量
-    private const val DEFAULT_BACKOFF_DELAY = 10L
-    private const val DEFAULT_INITIAL_DELAY = 0L
-    private const val MIN_PERIODIC_INTERVAL_MINUTES = 15L
-
-    // 任务标签常量
     const val UNIQUE_WORK_NAME = "UNIQUE_TASK_SCHEDULER"
-    const val TAG_ONE_TIME_WORK_NAME = "ONE_TIME_TASK_SCHEDULER"
-    const val TAG_CHAINING_WORK_NAME = "CHAINING_WORK"
-    const val TAG_PERIODIC_WORK_NAME = "PERIODIC_WORK"
 
-    // ============================================
-    // 一次性任务 (OneTime Work)
-    // ============================================
+    const val TAG_ONE_TIME_WORK_NAME = "ONE_TIME_TASK_SCHEDULER"
+
+    const val TAG_CHAINING_WORK_NAME = "CHAINING_WORK"
+
 
     /**
-     * 启动一次性任务（增强版）
-     *
-     * @param context 上下文
-     * @param workClass 任务类（继承自 ListenableWorker）
-     * @param tag 任务标签，用于查询和取消
-     * @param inputData 输入数据
-     * @param constraints 约束条件
-     * @param initialDelay 初始延迟时间（毫秒）
-     * @param backoffPolicy 退避策略
-     * @param backoffDelay 退避延迟时间（秒）
-     * @return 任务 UUID
+     * 启动一次性任务
+     * @param context
+     * @param workClass 任务类
+     * @param tag 任务类型标记
+     * @param inputData 附带参数
      */
     fun <T : ListenableWorker> startOneTimeWork(
         context: Context,
         workClass: Class<T>,
         tag: String? = null,
-        inputData: Data? = null,
-        constraints: Constraints? = null,
-        initialDelay: Long = DEFAULT_INITIAL_DELAY,
-        backoffPolicy: BackoffPolicy = BackoffPolicy.LINEAR,
-        backoffDelay: Long = DEFAULT_BACKOFF_DELAY
-    ): UUID? {
-        return try {
-            Log.d(TAG, "startOneTimeWork: class=$workClass, tag=$tag")
+        inputData: Data? = null
+    ): UUID {
 
-            val builder = OneTimeWorkRequest.Builder(workClass)
+        Log.d(TAG,"startOneTimeWork workClass$workClass, tag:$tag, inputData:$inputData")
 
-            // 添加标签
-            tag?.let { builder.addTag(it) }
-
-            // 设置输入数据
-            inputData?.let { builder.setInputData(it) }
-
-            // 设置约束条件
-            constraints?.let { builder.setConstraints(it) }
-
-            // 设置初始延迟
-            if (initialDelay > 0) {
-                builder.setInitialDelay(initialDelay, TimeUnit.MILLISECONDS)
-            }
-
-            // 设置退避策略
-            builder.setBackoffCriteria(backoffPolicy, backoffDelay, TimeUnit.SECONDS)
-
-            val workRequest = builder.build()
-            WorkManager.getInstance(context).enqueue(workRequest)
-
-            Log.d(TAG, "startOneTimeWork: enqueued with ID=${workRequest.id}")
-            workRequest.id
-        } catch (e: Exception) {
-            Log.e(TAG, "startOneTimeWork: Failed to enqueue work", e)
-            null
+        val builder = OneTimeWorkRequest.Builder(workClass)
+        //有标签
+        tag?.let {
+            Log.d(TAG,"startOneTimeWork add tag")
+            builder.addTag(it)
         }
-    }
-
-    /**
-     * 启动带约束的一次性任务（简化版）
-     *
-     * @param context 上下文
-     * @param workClass 任务类
-     * @param tag 任务标签
-     * @param constraints 约束条件
-     * @return 任务 UUID
-     */
-    fun <T : ListenableWorker> startConstraintsWorker(
-        context: Context,
-        workClass: Class<T> = TaskWorker::class.java as Class<T>,
-        tag: String = TAG_ONE_TIME_WORK_NAME,
-        constraints: Constraints = createDefaultConstraints()
-    ): UUID? {
-        Log.d(TAG, "startConstraintsWorker: tag=$tag")
-        return startOneTimeWork(
-            context = context,
-            workClass = workClass,
-            tag = tag,
-            constraints = constraints
-        )
-    }
-
-    /**
-     * 启动唯一性任务
-     *
-     * @param context 上下文
-     * @param uniqueWorkName 唯一任务名称
-     * @param workClass 任务类
-     * @param existingWorkPolicy 任务存在时的策略
-     * @param inputData 输入数据
-     * @param constraints 约束条件
-     * @return 任务 UUID
-     */
-    fun <T : ListenableWorker> startUniqueWork(
-        context: Context,
-        uniqueWorkName: String = UNIQUE_WORK_NAME,
-        workClass: Class<T> = TaskWorker::class.java as Class<T>,
-        existingWorkPolicy: ExistingWorkPolicy = ExistingWorkPolicy.REPLACE,
-        inputData: Data? = null,
-        constraints: Constraints? = null
-    ): UUID? {
-        return try {
-            Log.d(TAG, "startUniqueWork: name=$uniqueWorkName, policy=$existingWorkPolicy")
-
-            val builder = OneTimeWorkRequest.Builder(workClass)
-            inputData?.let { builder.setInputData(it) }
-            constraints?.let { builder.setConstraints(it) }
-
-            val workRequest = builder.build()
-            WorkManager.getInstance(context).enqueueUniqueWork(
-                uniqueWorkName,
-                existingWorkPolicy,
-                workRequest
-            )
-
-            Log.d(TAG, "startUniqueWork: enqueued with ID=${workRequest.id}")
-            workRequest.id
-        } catch (e: Exception) {
-            Log.e(TAG, "startUniqueWork: Failed to enqueue unique work", e)
-            null
+        //有附带数据
+        inputData?.let {
+            Log.d(TAG,"startOneTimeWork setInputData")
+            builder.setInputData(it)
         }
+        // 设置退避策略 (Backoff Policy)，处理重试
+        // 如果任务失败，10秒后重试，线性增加等待时间
+        builder.setBackoffCriteria(BackoffPolicy.LINEAR, 10, TimeUnit.SECONDS)
+
+        val taskWork = builder.build()
+        WorkManager.getInstance(context).enqueue(taskWork)
+        Log.d(TAG,"startOneTimeWork finish")
+        return taskWork.id
     }
 
     /**
-     * 启动定时任务（延迟执行的一次性任务）
-     *
-     * @param context 上下文
-     * @param workClass 任务类
-     * @param delayMillis 延迟时间（毫秒）
-     * @param inputData 输入数据
-     * @param tag 任务标签
-     * @return 任务 UUID
+     * 带约束约束条件的启动 一次性worker
      */
-    fun <T : ListenableWorker> startScheduledWork(
-        context: Context,
-        workClass: Class<T> = TaskWorker::class.java as Class<T>,
-        delayMillis: Long = 10000L,
-        inputData: Data? = null,
-        tag: String = TAG_ONE_TIME_WORK_NAME
-    ): UUID? {
-        Log.d(TAG, "startScheduledWork: delay=${delayMillis}ms, tag=$tag")
-        return startOneTimeWork(
-            context = context,
-            workClass = workClass,
-            tag = tag,
-            inputData = inputData,
-            initialDelay = delayMillis
-        )
+    fun startConstraintsWorker(context: Context, tag: String = TAG_ONE_TIME_WORK_NAME): UUID {
+        Log.d(TAG, "starConstraintsWorker")
+
+
+
+        //约束条件
+        val constraints =Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)//必须有网络
+            .setRequiresBatteryNotLow(true)//电量不能太低
+            .setRequiresCharging(true)//必须有充电
+            .setRequiresStorageNotLow(true)//存储空间不能太低
+            .build()
+
+        //创建任务请求
+        val taskWork = OneTimeWorkRequest.Builder(TaskWorker::class.java)
+            .setConstraints(constraints)
+            .addTag(tag)
+            .build()
+
+        WorkManager.getInstance(context).enqueue(taskWork)
+        return taskWork.id
     }
 
-    // ============================================
-    // 任务链 (Work Chaining)
-    // ============================================
+
 
     /**
-     * 启动串行任务链
-     *
-     * @param context 上下文
-     * @param works 任务列表（按顺序执行）
-     * @param tag 任务链标签
+     * 启动一个唯一性worker
      */
-    fun startChainingWork(
-        context: Context,
-        works: List<OneTimeWorkRequest>,
-        tag: String = TAG_CHAINING_WORK_NAME
-    ) {
-        try {
-            if (works.isEmpty()) {
-                Log.w(TAG, "startChainingWork: Empty work list")
-                return
-            }
+    fun startWorkerWithUnique(context: Context) : UUID {
 
-            Log.d(TAG, "startChainingWork: Starting chain with ${works.size} works")
+        Log.d(TAG, "startWorkerWithUnique")
 
-            val workManager = WorkManager.getInstance(context)
-            var continuation = workManager.beginWith(works.first())
+        /*
+            ExistingWorkPolicy 策略
+                REPLACE：替换旧的，以当前任务为最新
+                KEEP: 如果已有相同名字的任务在运行，**忽略**新任务（常用于“防止重复点击”）
+                APPEND：如果已有任务，新任务排在它**后面**执行（常用于“上传队列”）。
+                APPEND_OR_REPLACE：类似 APPEND，但如果前一个任务失败了，新任务会替换它而不是被阻塞。
+         */
 
-            works.drop(1).forEach { work ->
-                continuation = continuation.then(work)
-            }
+        val taskWork = OneTimeWorkRequest.Builder(TaskWorker::class.java).build()
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            UNIQUE_WORK_NAME,//唯一标识
+            ExistingWorkPolicy.REPLACE,//任务存在策略,如果有重复添加则替换旧的
+            taskWork)
 
-            continuation.enqueue()
-            Log.d(TAG, "startChainingWork: Chain enqueued successfully")
-        } catch (e: Exception) {
-            Log.e(TAG, "startChainingWork: Failed to start chain", e)
-        }
+
+
+        return taskWork.id
     }
 
+
     /**
-     * 启动串行任务链（简化版 - 使用默认 Worker）
+     * 定时启动 一次性worker
      */
-    fun startChainingWork(context: Context) {
-        Log.d(TAG, "startChainingWork: Using default workers")
+    fun startScheduledWork(context: Context) : UUID{
 
-        val works = listOf(
-            OneTimeWorkRequest.Builder(FirstWork::class.java).addTag(TAG_CHAINING_WORK_NAME).build(),
-            OneTimeWorkRequest.Builder(SecondWork::class.java).addTag(TAG_CHAINING_WORK_NAME).build(),
-            OneTimeWorkRequest.Builder(ThreeWork::class.java).addTag(TAG_CHAINING_WORK_NAME).build()
-        )
-
-        startChainingWork(context, works)
+        val inputData = workDataOf("param1" to "Scheduled Work")//不支持list
+        val taskWork = OneTimeWorkRequest.Builder(TaskWorker::class.java)
+            .setInitialDelay(10000,TimeUnit.MILLISECONDS)
+            .setInputData(inputData)
+            .addTag(TAG_ONE_TIME_WORK_NAME)
+            .build()
+        WorkManager.getInstance(context).enqueue(taskWork)
+        return taskWork.id
     }
 
+
     /**
-     * 启动并行 + 串行混合任务链
-     *
-     * 场景：多个任务并行执行，然后汇总结果
-     *
-     * @param context 上下文
-     * @param parallelWorks 并行执行的任务列表
-     * @param finalWork 并行任务完成后执行的汇总任务
+     * 启动一个任务链 一次性worker
      */
-    fun startParallelChainingWork(
-        context: Context,
-        parallelWorks: List<OneTimeWorkRequest>,
-        finalWork: OneTimeWorkRequest
-    ) {
-        try {
-            if (parallelWorks.isEmpty()) {
-                Log.w(TAG, "startParallelChainingWork: Empty parallel work list")
-                return
-            }
+    fun startChainingWork(context: Context){
 
-            Log.d(TAG, "startParallelChainingWork: ${parallelWorks.size} parallel works")
+        Log.d(TAG,"startChainingWork")
+        val firstWork = OneTimeWorkRequest.Builder(FirstWork::class.java).addTag(TAG_CHAINING_WORK_NAME).build()
+        val secondWork = OneTimeWorkRequest.Builder(SecondWork::class.java).addTag(TAG_CHAINING_WORK_NAME).build()
+        val threeWork = OneTimeWorkRequest.Builder(ThreeWork::class.java).addTag(TAG_CHAINING_WORK_NAME).build()
 
-            WorkManager.getInstance(context)
-                .beginWith(parallelWorks)
-                .then(finalWork)
-                .enqueue()
+        //按顺序执行任务，其中有一个失败，则不会进行后续任务
 
-            Log.d(TAG, "startParallelChainingWork: Chain enqueued successfully")
-        } catch (e: Exception) {
-            Log.e(TAG, "startParallelChainingWork: Failed to start parallel chain", e)
-        }
-    }
+        WorkManager.getInstance(context).beginWith(firstWork).then(secondWork).then(threeWork).enqueue()
 
-    // ============================================
-    // 周期性任务 (Periodic Work)
-    // ============================================
-
-    /**
-     * 启动周期性任务（增强版）
-     *
-     * 注意：最小间隔为 15 分钟（Android 系统限制）
-     *
-     * @param context 上下文
-     * @param workClass 任务类
-     * @param intervalMinutes 重复间隔（分钟），最小 15 分钟
-     * @param flexIntervalMinutes 灵活间隔（分钟），可选
-     * @param constraints 约束条件
-     * @param inputData 输入数据
-     * @param tag 任务标签
-     * @return 任务 UUID
-     */
-    fun <T : ListenableWorker> startPeriodicWork(
-        context: Context,
-        workClass: Class<T>,
-        intervalMinutes: Long = MIN_PERIODIC_INTERVAL_MINUTES,
-        flexIntervalMinutes: Long? = null,
-        constraints: Constraints? = null,
-        inputData: Data? = null,
-        tag: String = TAG_PERIODIC_WORK_NAME
-    ): UUID? {
-        return try {
-            val actualInterval = intervalMinutes.coerceAtLeast(MIN_PERIODIC_INTERVAL_MINUTES)
-
-            if (intervalMinutes < MIN_PERIODIC_INTERVAL_MINUTES) {
-                Log.w(TAG, "startPeriodicWork: Interval adjusted from $intervalMinutes to $actualInterval minutes")
-            }
-
-            Log.d(TAG, "startPeriodicWork: interval=${actualInterval}min, flex=${flexIntervalMinutes}min")
-
-            val builder = if (flexIntervalMinutes != null && flexIntervalMinutes > 0) {
-                PeriodicWorkRequestBuilder<CoroutineWorker>(
-                    actualInterval, TimeUnit.MINUTES,
-                    flexIntervalMinutes, TimeUnit.MINUTES
-                )
-            } else {
-                PeriodicWorkRequestBuilder<CoroutineWorker>(actualInterval, TimeUnit.MINUTES)
-            }
-
-            constraints?.let { builder.setConstraints(it) }
-            inputData?.let { builder.setInputData(it) }
-            tag.let { builder.addTag(it) }
-
-            val workRequest = builder.build()
-            WorkManager.getInstance(context).enqueue(workRequest)
-
-            Log.d(TAG, "startPeriodicWork: enqueued with ID=${workRequest.id}")
-            workRequest.id
-        } catch (e: Exception) {
-            Log.e(TAG, "startPeriodicWork: Failed to enqueue periodic work", e)
-            null
-        }
     }
 
     /**
-     * 启动唯一周期性任务
-     *
-     * @param context 上下文
-     * @param uniqueWorkName 唯一任务名称
-     * @param workClass 任务类
-     * @param intervalMinutes 重复间隔（分钟）
-     * @param existingWorkPolicy 任务存在时的策略
-     * @param constraints 约束条件
-     * @return 任务 UUID
-     */
-    fun <T : ListenableWorker> startUniquePeriodicWork(
-        context: Context,
-        uniqueWorkName: String,
-        workClass: Class<T>,
-        intervalMinutes: Long = MIN_PERIODIC_INTERVAL_MINUTES,
-        existingWorkPolicy: ExistingPeriodicWorkPolicy = ExistingPeriodicWorkPolicy.KEEP,
-        constraints: Constraints? = null
-    ): UUID? {
-        return try {
-            val actualInterval = intervalMinutes.coerceAtLeast(MIN_PERIODIC_INTERVAL_MINUTES)
-
-            Log.d(TAG, "startUniquePeriodicWork: name=$uniqueWorkName, interval=${actualInterval}min")
-
-            val builder = PeriodicWorkRequestBuilder<CoroutineWorker>(actualInterval, TimeUnit.MINUTES)
-            constraints?.let { builder.setConstraints(it) }
-
-            val workRequest = builder.build()
-            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-                uniqueWorkName,
-                existingWorkPolicy,
-                workRequest as PeriodicWorkRequest
-            )
-
-            Log.d(TAG, "startUniquePeriodicWork: enqueued with ID=${workRequest.id}")
-            workRequest.id
-        } catch (e: Exception) {
-            Log.e(TAG, "startUniquePeriodicWork: Failed to enqueue unique periodic work", e)
-            null
-        }
-    }
-
-    /**
-     * 启动周期性任务（简化版 - 兼容旧版）
+     * 启动一个周期性任务，最小间隔15分
      */
     fun startPeriodicChainingWork(context: Context) {
-        Log.d(TAG, "startPeriodicChainingWork: Using default worker")
-        startPeriodicWork(
-            context = context,
-            workClass = TaskWorker::class.java,
-            intervalMinutes = MIN_PERIODIC_INTERVAL_MINUTES
-        )
+
+        Log.d(TAG, "startPeriodicChainingWork")
+
+        //最小间隔 15分钟
+        val saveRequest = PeriodicWorkRequestBuilder<TaskWorker>(15, TimeUnit.MINUTES).build()
+        WorkManager.getInstance(context).enqueue(saveRequest)
     }
 
-    // ============================================
-    // 高级功能
-    // ============================================
+
+    /*
+       高级进阶
+     */
 
     /**
-     * 启动加急任务（立即执行，不等待）
-     *
-     * 注意：Android 12+ 需要实现 getForegroundInfo()
-     *
-     * @param context 上下文
-     * @param workClass 任务类
-     * @param outOfQuotaPolicy 配额不足时的策略
-     * @param inputData 输入数据
-     * @return 任务 UUID
+     * 加急任务，马上执行，不会有等待时间
      */
-    fun <T : ListenableWorker> startExpeditedWork(
-        context: Context,
-        workClass: Class<T> = TaskWorker::class.java as Class<T>,
-        outOfQuotaPolicy: OutOfQuotaPolicy = OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST,
-        inputData: Data? = null
-    ): UUID? {
-        return try {
-            Log.d(TAG, "startExpeditedWork: class=$workClass, policy=$outOfQuotaPolicy")
+    fun startExpeditedWork(context: Context) : UUID{
+        /*
+            Android 12+ 需要实现为前台任务
+         */
 
-            val builder = OneTimeWorkRequest.Builder(workClass)
-                .setExpedited(outOfQuotaPolicy)
 
-            inputData?.let { builder.setInputData(it) }
 
-            val workRequest = builder.build()
-            WorkManager.getInstance(context).enqueue(workRequest)
 
-            Log.d(TAG, "startExpeditedWork: enqueued with ID=${workRequest.id}")
-            workRequest.id
-        } catch (e: Exception) {
-            Log.e(TAG, "startExpeditedWork: Failed to enqueue expedited work", e)
-            null
-        }
-    }
-
-    // ============================================
-    // 约束条件构建器
-    // ============================================
-
-    /**
-     * 创建默认约束条件（较为严格）
-     */
-    fun createDefaultConstraints(): Constraints {
-        return Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .setRequiresBatteryNotLow(true)
-            .setRequiresCharging(true)
-            .setRequiresStorageNotLow(true)
+        Log.d(TAG, "startExpeditedWork")
+        val request = OneTimeWorkRequest.Builder(TaskWorker::class.java)
+            .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)//设置加急
             .build()
+
+        WorkManager.getInstance(context).enqueue(request)
+        return request.id
     }
 
-    /**
-     * 创建自定义约束条件（灵活配置）
-     *
-     * @param networkType 网络类型要求
-     * @param requiresCharging 是否需要充电
-     * @param requiresBatteryNotLow 是否要求电量充足
-     * @param requiresStorageNotLow 是否要求存储空间充足
-     * @param requiresDeviceIdle 是否要求设备空闲（Android 6.0+）
-     * @return 约束条件
-     */
-    fun createConstraints(
-        networkType: NetworkType = NetworkType.NOT_REQUIRED,
-        requiresCharging: Boolean = false,
-        requiresBatteryNotLow: Boolean = false,
-        requiresStorageNotLow: Boolean = false,
-        requiresDeviceIdle: Boolean = false
-    ): Constraints {
-        return Constraints.Builder()
-            .setRequiredNetworkType(networkType)
-            .setRequiresCharging(requiresCharging)
-            .setRequiresBatteryNotLow(requiresBatteryNotLow)
-            .setRequiresStorageNotLow(requiresStorageNotLow)
-            .setRequiresDeviceIdle(requiresDeviceIdle)
-            .build()
-    }
+
+
+
 
     /**
-     * 创建仅需网络的约束（常用）
+     * 观察数据
+     * @param context
+     * @param tag 任务类型标记，观察对应类型的 任务，默认TAG_ONE_TIME_WORK_NAME
      */
-    fun createNetworkConstraints(networkType: NetworkType = NetworkType.CONNECTED): Constraints {
-        return Constraints.Builder()
-            .setRequiredNetworkType(networkType)
-            .build()
-    }
-
-    // ============================================
-    // 任务观察 - LiveData
-    // ============================================
-
-    /**
-     * 根据标签观察任务状态（LiveData）
-     *
-     * @param context 上下文
-     * @param tag 任务标签
-     * @return LiveData<List<WorkInfo>>
-     */
-    fun getWorkInfoByTag(
-        context: Context,
-        tag: String = TAG_ONE_TIME_WORK_NAME
-    ): LiveData<List<WorkInfo>> {
+    fun getWorkInfoByTag(context: Context, tag: String = TAG_ONE_TIME_WORK_NAME) : LiveData<List<WorkInfo>>{
+        //提供LiveData 给外部观察，让外部自己 管理生命周期
         return WorkManager.getInstance(context).getWorkInfosByTagLiveData(tag)
     }
 
     /**
-     * 根据 UUID 观察任务状态（LiveData）
-     *
-     * @param context 上下文
-     * @param uuid 任务 UUID
-     * @return LiveData<WorkInfo?>
+     * 观察数据
+     * @param context
+     * @param uuid 观察指定任务的id
      */
     fun getWorkInfoById(context: Context, uuid: UUID): LiveData<WorkInfo?> {
         return WorkManager.getInstance(context).getWorkInfoByIdLiveData(uuid)
     }
 
     /**
-     * 观察唯一任务状态（LiveData）
-     *
-     * @param context 上下文
-     * @param uniqueWorkName 唯一任务名称
-     * @return LiveData<List<WorkInfo>>
+     * 观察 唯一任务 状态
      */
-    fun getUniqueWorkInfo(
-        context: Context,
-        uniqueWorkName: String = UNIQUE_WORK_NAME
-    ): LiveData<List<WorkInfo>> {
-        return WorkManager.getInstance(context).getWorkInfosForUniqueWorkLiveData(uniqueWorkName)
+    fun startObserveUniqueWorker(context: Context):LiveData<List<WorkInfo>> {
+        return WorkManager.getInstance(context).getWorkInfosForUniqueWorkLiveData(UNIQUE_WORK_NAME)
     }
 
     /**
-     * 观察所有任务状态（LiveData）
-     *
-     * @param context 上下文
-     * @return LiveData<List<WorkInfo>>
+     * 根据uuid 取消worker
+     * @param context
+     * @param id 任务id
      */
-    fun getAllWorkInfo(context: Context): LiveData<List<WorkInfo>> {
-        return WorkManager.getInstance(context).getWorkInfosLiveData(
-            androidx.work.WorkQuery.Builder.fromStates(
-                listOf(
-                    WorkInfo.State.ENQUEUED,
-                    WorkInfo.State.RUNNING,
-                    WorkInfo.State.SUCCEEDED,
-                    WorkInfo.State.FAILED,
-                    WorkInfo.State.BLOCKED,
-                    WorkInfo.State.CANCELLED
-                )
-            ).build()
-        )
-    }
-
-    // ============================================
-    // 任务观察 - Kotlin Flow
-    // ============================================
-
-    /**
-     * 根据标签观察任务状态（Flow）
-     *
-     * @param context 上下文
-     * @param tag 任务标签
-     * @return Flow<List<WorkInfo>>
-     */
-    fun getWorkInfoByTagFlow(
-        context: Context,
-        tag: String = TAG_ONE_TIME_WORK_NAME
-    ): Flow<List<WorkInfo>> {
-        return WorkManager.getInstance(context).getWorkInfosByTagFlow(tag)
+    fun cancelWorkById(context: Context, id: UUID){
+        WorkManager.getInstance(context).cancelWorkById(id)
     }
 
     /**
-     * 根据 UUID 观察任务状态（Flow）
-     *
-     * @param context 上下文
-     * @param uuid 任务 UUID
-     * @return Flow<WorkInfo?>
+     * 根据tag 取消worker
+     * @param context
+     * @param tag 任务类型标记
      */
-    fun getWorkInfoByIdFlow(context: Context, uuid: UUID): Flow<WorkInfo?> {
-        return WorkManager.getInstance(context).getWorkInfoByIdFlow(uuid)
+    fun cancelWorkByTag(context: Context, tag: String){
+        WorkManager.getInstance(context).cancelAllWorkByTag(tag)
     }
 
+
     /**
-     * 观察唯一任务状态（Flow）
-     *
-     * @param context 上下文
-     * @param uniqueWorkName 唯一任务名称
-     * @return Flow<List<WorkInfo>>
+     * 清除所有已经完成、取消或失败的任务记录
      */
-    fun getUniqueWorkInfoFlow(
-        context: Context,
-        uniqueWorkName: String = UNIQUE_WORK_NAME
-    ): Flow<List<WorkInfo>> {
-        return WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow(uniqueWorkName)
+    fun resetCache(context: Context){
+        WorkManager.getInstance(context).pruneWork()
     }
 
-    /**
-     * 观察所有任务状态（Flow）
-     */
-    fun getAllWorkInfoFlow(context: Context): Flow<List<WorkInfo>> {
-        return WorkManager.getInstance(context).getWorkInfosFlow(
-            androidx.work.WorkQuery.Builder.fromStates(
-                listOf(
-                    WorkInfo.State.ENQUEUED,
-                    WorkInfo.State.RUNNING,
-                    WorkInfo.State.SUCCEEDED,
-                    WorkInfo.State.FAILED,
-                    WorkInfo.State.BLOCKED,
-                    WorkInfo.State.CANCELLED
-                )
-            ).build()
-        )
-    }
-
-    // ============================================
-    // 任务观察 - 回调方式
-    // ============================================
-
-    /**
-     * 观察任务状态并触发回调
-     *
-     * @param context 上下文
-     * @param lifecycleOwner 生命周期所有者
-     * @param workId 任务 UUID
-     * @param onEnqueued 任务入队回调
-     * @param onRunning 任务运行回调
-     * @param onSuccess 任务成功回调
-     * @param onFailure 任务失败回调
-     * @param onCancelled 任务取消回调
-     */
-    fun observeWorkWithCallback(
-        context: Context,
-        lifecycleOwner: LifecycleOwner,
-        workId: UUID,
-        onEnqueued: (() -> Unit)? = null,
-        onRunning: (() -> Unit)? = null,
-        onSuccess: ((Data) -> Unit)? = null,
-        onFailure: ((Data) -> Unit)? = null,
-        onCancelled: (() -> Unit)? = null
-    ) {
-        getWorkInfoById(context, workId).observe(lifecycleOwner) { workInfo ->
-            workInfo?.let {
-                when (it.state) {
-                    WorkInfo.State.ENQUEUED -> {
-                        Log.d(TAG, "Work $workId: ENQUEUED")
-                        onEnqueued?.invoke()
-                    }
-                    WorkInfo.State.RUNNING -> {
-                        Log.d(TAG, "Work $workId: RUNNING")
-                        onRunning?.invoke()
-                    }
-                    WorkInfo.State.SUCCEEDED -> {
-                        Log.d(TAG, "Work $workId: SUCCEEDED")
-                        onSuccess?.invoke(it.outputData)
-                    }
-                    WorkInfo.State.FAILED -> {
-                        Log.e(TAG, "Work $workId: FAILED")
-                        onFailure?.invoke(it.outputData)
-                    }
-                    WorkInfo.State.CANCELLED -> {
-                        Log.w(TAG, "Work $workId: CANCELLED")
-                        onCancelled?.invoke()
-                    }
-                    WorkInfo.State.BLOCKED -> {
-                        Log.d(TAG, "Work $workId: BLOCKED")
-                    }
-                }
-            }
-        }
-    }
-
-    // ============================================
-    // 任务取消
-    // ============================================
-
-    /**
-     * 根据 UUID 取消任务
-     *
-     * @param context 上下文
-     * @param id 任务 UUID
-     */
-    fun cancelWorkById(context: Context, id: UUID) {
-        try {
-            Log.d(TAG, "cancelWorkById: $id")
-            WorkManager.getInstance(context).cancelWorkById(id)
-        } catch (e: Exception) {
-            Log.e(TAG, "cancelWorkById: Failed to cancel work", e)
-        }
-    }
-
-    /**
-     * 根据标签取消任务
-     *
-     * @param context 上下文
-     * @param tag 任务标签
-     */
-    fun cancelWorkByTag(context: Context, tag: String) {
-        try {
-            Log.d(TAG, "cancelWorkByTag: $tag")
-            WorkManager.getInstance(context).cancelAllWorkByTag(tag)
-        } catch (e: Exception) {
-            Log.e(TAG, "cancelWorkByTag: Failed to cancel work", e)
-        }
-    }
-
-    /**
-     * 取消唯一任务
-     *
-     * @param context 上下文
-     * @param uniqueWorkName 唯一任务名称
-     */
-    fun cancelUniqueWork(context: Context, uniqueWorkName: String) {
-        try {
-            Log.d(TAG, "cancelUniqueWork: $uniqueWorkName")
-            WorkManager.getInstance(context).cancelUniqueWork(uniqueWorkName)
-        } catch (e: Exception) {
-            Log.e(TAG, "cancelUniqueWork: Failed to cancel unique work", e)
-        }
-    }
-
-    /**
-     * 取消所有任务
-     *
-     * 警告：此操作会取消所有正在运行和排队的任务
-     *
-     * @param context 上下文
-     */
-    fun cancelAllWork(context: Context) {
-        try {
-            Log.w(TAG, "cancelAllWork: Cancelling all works")
-            WorkManager.getInstance(context).cancelAllWork()
-        } catch (e: Exception) {
-            Log.e(TAG, "cancelAllWork: Failed to cancel all work", e)
-        }
-    }
-
-    // ============================================
-    // 任务查询
-    // ============================================
-
-    /**
-     * 查询指定状态的任务数量
-     *
-     * @param context 上下文
-     * @param state 任务状态
-     * @return 任务数量（失败时返回 -1）
-     */
-    suspend fun getWorkCountByState(context: Context, state: WorkInfo.State): Int {
-        return try {
-            val workInfos = WorkManager.getInstance(context)
-                .getWorkInfos(
-                    androidx.work.WorkQuery.Builder
-                        .fromStates(listOf(state))
-                        .build()
-                )
-                .await()
-            workInfos.size
-        } catch (e: Exception) {
-            Log.e(TAG, "getWorkCountByState: Failed to get work count", e)
-            -1
-        }
-    }
-
-    /**
-     * 检查任务是否正在运行
-     *
-     * @param context 上下文
-     * @param workId 任务 UUID
-     * @return 是否正在运行
-     */
-    suspend fun isWorkRunning(context: Context, workId: UUID): Boolean {
-        return try {
-            val workInfo = WorkManager.getInstance(context).getWorkInfoById(workId).await()
-            workInfo?.state == WorkInfo.State.RUNNING
-        } catch (e: Exception) {
-            Log.e(TAG, "isWorkRunning: Failed to check work status", e)
-            false
-        }
-    }
-
-    /**
-     * 检查唯一任务是否存在
-     *
-     * @param context 上下文
-     * @param uniqueWorkName 唯一任务名称
-     * @return 是否存在
-     */
-    suspend fun isUniqueWorkExists(context: Context, uniqueWorkName: String): Boolean {
-        return try {
-            val workInfos = WorkManager.getInstance(context)
-                .getWorkInfosForUniqueWork(uniqueWorkName)
-                .await()
-            workInfos.isNotEmpty() && workInfos.any {
-                it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.RUNNING
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "isUniqueWorkExists: Failed to check unique work", e)
-            false
-        }
-    }
-
-    // ============================================
-    // 数据管理
-    // ============================================
-
-    /**
-     * 清除已完成、取消或失败的任务记录
-     *
-     * @param context 上下文
-     */
-    fun pruneWork(context: Context) {
-        try {
-            Log.d(TAG, "pruneWork: Cleaning up completed work records")
-            WorkManager.getInstance(context).pruneWork()
-        } catch (e: Exception) {
-            Log.e(TAG, "pruneWork: Failed to prune work", e)
-        }
-    }
-
-    /**
-     * 清除任务缓存（别名，兼容旧版）
-     */
-    fun resetCache(context: Context) {
-        pruneWork(context)
-    }
-
-    // ============================================
-    // 工具方法
-    // ============================================
-
-    /**
-     * 创建输入数据（Data 构建辅助）
-     *
-     * @param pairs 键值对
-     * @return Data
-     */
-    fun createInputData(vararg pairs: Pair<String, Any?>): Data {
-        return workDataOf(*pairs)
-    }
-
-    /**
-     * 获取 WorkManager 实例
-     *
-     * @param context 上下文
-     * @return WorkManager
-     */
-    fun getInstance(context: Context): WorkManager {
-        return WorkManager.getInstance(context)
-    }
-
-    /**
-     * 日志开关（生产环境建议关闭）
-     */
-    var enableLogging: Boolean = true
-        set(value) {
-            field = value
-            if (!value) {
-                Log.d(TAG, "Logging disabled")
-            }
-        }
 }
-
-///**
-// * WorkInfo.State 扩展属性
-// */
-//val WorkInfo.State.isFinished: Boolean
-//    get() = this == WorkInfo.State.SUCCEEDED ||
-//            this == WorkInfo.State.FAILED ||
-//            this == WorkInfo.State.CANCELLED
-//
-//val WorkInfo.State.isActive: Boolean
-//    get() = this == WorkInfo.State.ENQUEUED || this == WorkInfo.State.RUNNING
-//
-///**
-// * WorkInfo 扩展属性
-// */
-//val WorkInfo.isFinished: Boolean
-//    get() = state.isFinished
-//
-//val WorkInfo.isActive: Boolean
-//    get() = state.isActive
